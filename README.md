@@ -1,13 +1,26 @@
-# Dealer AI
+# AI Voice Agent
 
-An AI voice agent for car dealerships. When a new lead comes in, it phones the customer right away,
-talks about the car they asked about, qualifies them (budget, timeline, trade-in, financing), tries
-to book a test drive, and saves the transcript plus a structured summary for the sales team.
+An AI voice agent that makes real phone calls. You give it a phone number and some context
+through an API; it calls the person, holds a natural spoken conversation with a real-time AI
+voice model, and saves the transcript plus a structured summary of the call to a database.
+
+It can be used for any outbound calling task, for example:
+
+- Following up on new leads (sales, real estate, insurance, education)
+- Appointment booking, reminders and confirmations (clinics, salons, service centres)
+- Customer feedback and satisfaction surveys
+- Order, delivery or payment follow-ups
+- Qualifying enquiries before handing them to a human
+
+**Built-in example:** the project ships configured for a car dealership. The agent calls someone
+who enquired about a car, answers questions about it, asks about budget, timeline, trade-in and
+financing, and offers a test drive. See [Adapting it to your use case](#adapting-it-to-your-use-case)
+to change the script for anything else.
 
 ## How it works
 
 ```
-POST /api/calls ──► Twilio places the call ──► customer answers
+POST /api/calls ──► Twilio places the call ──► person answers
                                                    │
              Twilio streams audio over WebSocket (/ws/calls/{id})
                                                    │
@@ -18,14 +31,16 @@ POST /api/calls ──► Twilio places the call ──► customer answers
                             results saved in PostgreSQL ──► GET /api/calls/{id}
 ```
 
-1. You send the customer's phone number and the car's details to `POST /api/calls`.
-2. The app creates the lead in the database and asks Twilio to dial the number.
-3. When the customer answers, Twilio streams the call audio to the app over a WebSocket.
+1. You send a phone number and context (who they are, what the call is about) to `POST /api/calls`.
+2. The app saves the contact in the database and asks Twilio to dial the number.
+3. When the person answers, Twilio streams the call audio to the app over a WebSocket.
 4. Pipecat connects that audio to a real-time voice model (Gemini Live or OpenAI Realtime), which
-   holds the conversation using a prompt built from the lead and vehicle.
-5. After the call, a Gemini text model reads the transcript and extracts the outcome (budget,
-   timeline, trade-in, callback time, summary). If an answering machine picks up, the call is hung up.
-6. You fetch everything with `GET /api/calls/{id}`.
+   holds the conversation by following a system prompt built from your context.
+5. The AI ends the call itself when the conversation is over. If an answering machine picks up,
+   the call is hung up.
+6. After the call, a Gemini text model reads the transcript and extracts structured results
+   (outcome, key answers, callback time, summary).
+7. You fetch everything with `GET /api/calls/{id}`.
 
 ## Tech stack
 
@@ -35,10 +50,10 @@ POST /api/calls ──► Twilio places the call ──► customer answers
 | Package manager | [uv](https://docs.astral.sh/uv/) | Installs Python 3.12 and the exact dependency versions from `uv.lock` |
 | Web framework | FastAPI + Uvicorn | REST API, Twilio webhooks and the audio WebSocket |
 | Voice pipeline | [Pipecat](https://github.com/pipecat-ai/pipecat) | Connects Twilio's audio stream to the AI voice model |
-| Voice AI | Google Gemini Live (default) or OpenAI Realtime | Speech-to-speech conversation with the customer |
-| Call analysis | Google Gemini (`google-genai`) | Turns the transcript into structured lead data |
-| Telephony | Twilio | Places the phone call, detects answering machines, records calls |
-| Database | PostgreSQL + SQLAlchemy (async) + asyncpg | Stores leads, vehicles, calls and transcripts |
+| Voice AI | Google Gemini Live (default) or OpenAI Realtime | Speech-to-speech conversation on the call |
+| Call analysis | Google Gemini (`google-genai`) | Turns the transcript into structured JSON |
+| Telephony | Twilio | Places the call, detects answering machines, records calls |
+| Database | PostgreSQL + SQLAlchemy (async) + asyncpg | Stores contacts, calls, transcripts and results |
 | Migrations | Alembic | Creates and updates the database tables |
 | Validation | Pydantic, pydantic-settings, phonenumbers | Request validation, `.env` config, phone number checks |
 | Logging | Loguru | |
@@ -58,14 +73,14 @@ app/
   voice/
     bot.py             Pipecat pipeline that runs one phone call
     engines.py         Picks Gemini Live or OpenAI Realtime
-    prompt.py          Builds the agent's system prompt from lead + vehicle
+    prompt.py          The agent's script (system prompt)
     analysis.py        Post-call transcript analysis with Gemini
     outcome.py         Saves the call outcome to the database
 alembic/               Database migrations
 scripts/
   setup_local_db.sql   Creates the local database and user
   test_call.py         Places a test call and prints the result
-  sample_call.json     Example phone number + car details
+  sample_call.json     Example phone number + call context
 tests/                 pytest tests
 ```
 
@@ -118,7 +133,8 @@ Open `.env` and fill in at least:
 | `LEAD_API_KEY` | Any secret string; clients send it in the `X-API-Key` header |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` | From your Twilio console |
 | `GOOGLE_API_KEY` | Your Gemini API key |
-| `DEALERSHIP_NAME`, `AGENT_NAME` | Names the agent uses on the call |
+| `DEALERSHIP_NAME` | The business the agent calls on behalf of |
+| `AGENT_NAME` | The name the agent introduces itself with |
 
 Never commit `.env`. It is already in `.gitignore`.
 
@@ -160,8 +176,8 @@ python -m uv run uvicorn app.main:app --port 8000
 python -m uv run python scripts\test_call.py scripts\sample_call.json --phone +1XXXXXXXXXX
 ```
 
-Your phone rings and the agent talks about the car in `scripts/sample_call.json`. When the call
-ends, the script prints the transcript and the analysed outcome.
+Your phone rings and the agent runs the script using the details in `scripts/sample_call.json`.
+When the call ends, the script prints the transcript and the analysed result.
 
 > On a Twilio trial account you can only call numbers you have verified in the Twilio console.
 
@@ -171,16 +187,35 @@ Every `/api/*` request needs the header `X-API-Key: <LEAD_API_KEY>`.
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/calls` | Start a call. Body: `phone`, `first_name`, `vehicle`, and optionally `last_name`, `customer_message` (see `scripts/sample_call.json`) |
-| `GET` | `/api/calls/{id}` | Call status, transcript, analysis and lead details |
+| `POST` | `/api/calls` | Start a call. Body: `phone`, `first_name`, optional `last_name` and `customer_message`, plus the call context (in the built-in example, a `vehicle` object; see `scripts/sample_call.json`) |
+| `GET` | `/api/calls/{id}` | Call status, transcript, analysis and contact details |
 | `GET` | `/health` | App and database health |
 
 `/twilio/*` and `/ws/calls/*` are called by Twilio only and are protected by Twilio signature checks.
 
+## Adapting it to your use case
+
+The calling, audio streaming, voice AI, recording and storage work for any kind of call. What the
+agent says and what it extracts afterwards are defined in a few files:
+
+| To change... | Edit |
+|---|---|
+| What the agent says: its role, goal, call steps and rules | `app/voice/prompt.py` (`build_system_prompt`) |
+| What gets extracted after the call (fields and outcome labels) | `app/voice/analysis.py` (`CallAnalysis`, `OutcomeLabel`, `INSTRUCTIONS`) |
+| The context you send when starting a call | `app/api/calls.py` (`CallRequest`, `VehicleIn`) |
+| How the results are stored | `app/db/models.py`, then create a migration with `python -m uv run alembic revision --autogenerate -m "..."` |
+| Business and agent names | `DEALERSHIP_NAME`, `AGENT_NAME` in `.env` |
+
+For example, to turn it into a clinic appointment-reminder agent, rewrite the prompt to confirm or
+reschedule an appointment, replace the analysis fields with `confirmed` / `new_time` /
+`reason_for_cancelling`, and send appointment details instead of a vehicle in the request.
+
+Keep the `end_call` instruction in the prompt so the agent can hang up by itself.
+
 ## Switching the voice engine
 
 Set `VOICE_ENGINE=gemini` or `VOICE_ENGINE=openai` in `.env` and restart. No code changes are
-needed. OpenAI requires `OPENAI_API_KEY`.
+needed. OpenAI requires `OPENAI_API_KEY`. The voice can be changed with `GEMINI_VOICE`.
 
 ## Production (Docker)
 
@@ -194,7 +229,16 @@ docker compose up -d --build
 This starts PostgreSQL, the app (it runs the migrations first) and Caddy, which gets an HTTPS
 certificate for `DOMAIN` automatically.
 
+## Responsible use
+
+Automated calls are regulated in many countries (for example the TCPA in the US and CASL in
+Canada). Only call people who have agreed to be contacted, respect do-not-call requests, and
+tell them they are speaking to an AI. The built-in prompt already discloses that it is an AI and
+that the call is recorded.
+
 ## Current limitations
 
-- One call per request; no automatic retries, SMS, calendar booking or salesperson alerts yet.
+- One call per request; no automatic retries, SMS, calendar booking or human alerts yet.
 - Voicemails are hung up on rather than getting a message left.
+- The request format, database tables and analysis fields are still shaped around the built-in
+  dealership example; other use cases need the edits listed above.
