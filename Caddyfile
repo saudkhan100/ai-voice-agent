@@ -1,0 +1,4 @@
+# Automatic HTTPS; Twilio requires a valid certificate for webhooks and wss:// media streams.
+{$DOMAIN} {
+	reverse_proxy app:8000
+}

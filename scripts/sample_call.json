@@ -1,0 +1,21 @@
+{
+  "phone": "+10000000000",
+  "first_name": "Sam",
+  "last_name": "Test",
+  "customer_message": "Is this still available? Can I see it this weekend?",
+  "vehicle": {
+    "year": 2021,
+    "make": "Toyota",
+    "model": "RAV4",
+    "trim": "XLE AWD",
+    "condition": "used",
+    "price": 28995,
+    "mileage": 41200,
+    "ext_color": "Blueprint blue",
+    "int_color": "Black",
+    "body_style": "SUV",
+    "stock_number": "T1234",
+    "features": ["All-wheel drive", "Heated front seats", "Apple CarPlay", "Blind spot monitor", "Power liftgate"],
+    "description": "One owner, clean history report, new tires."
+  }
+}
